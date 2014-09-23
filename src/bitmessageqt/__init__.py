@@ -1,8 +1,3 @@
-try:
-    import locale
-except:
-    pass
-
 withMessagingMenu = False
 try:
     from gi.repository import MessagingMenu
@@ -16,6 +11,7 @@ import shared
 from bitmessageui import *
 from namecoin import namecoinConnection, ensureNamecoinOptions
 from newaddressdialog import *
+from addaddressdialog import *
 from newsubscriptiondialog import *
 from regenerateaddresses import *
 from newchandialog import *
@@ -33,11 +29,13 @@ import hashlib
 from pyelliptic.openssl import OpenSSL
 import pickle
 import platform
+import textwrap
 import debug
 from debug import logger
 import subprocess
 import datetime
 from helper_sql import *
+import l10n
 
 try:
     from PyQt4 import QtCore, QtGui
@@ -480,6 +478,10 @@ class MyForm(QtGui.QMainWindow):
             # startup for linux
             pass
 
+
+        self.totalNumberOfBytesReceived = 0
+        self.totalNumberOfBytesSent = 0
+        
         self.ui.labelSendBroadcastWarning.setVisible(False)
 
         self.timer = QtCore.QTimer()
@@ -572,7 +574,7 @@ class MyForm(QtGui.QMainWindow):
         self.statusbar = self.statusBar()
         self.statusbar.insertPermanentWidget(0, self.ui.pushButtonStatusIcon)
         self.ui.labelStartupTime.setText(_translate("MainWindow", "Since startup on %1").arg(
-            unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(time.time()))),'utf-8')))
+            l10n.formatTimestamp()))
         self.numberOfMessagesProcessed = 0
         self.numberOfBroadcastsProcessed = 0
         self.numberOfPubkeysProcessed = 0
@@ -609,6 +611,8 @@ class MyForm(QtGui.QMainWindow):
             "updateNumberOfBroadcastsProcessed()"), self.updateNumberOfBroadcastsProcessed)
         QtCore.QObject.connect(self.UISignalThread, QtCore.SIGNAL(
             "setStatusIcon(PyQt_PyObject)"), self.setStatusIcon)
+        QtCore.QObject.connect(self.UISignalThread, QtCore.SIGNAL(
+            "changedInboxUnread(PyQt_PyObject)"), self.changedInboxUnread)
         QtCore.QObject.connect(self.UISignalThread, QtCore.SIGNAL(
             "rerenderInboxFromLabels()"), self.rerenderInboxFromLabels)
         QtCore.QObject.connect(self.UISignalThread, QtCore.SIGNAL(
@@ -768,7 +772,7 @@ class MyForm(QtGui.QMainWindow):
 
             if shared.config.has_section(fromAddress):
                 fromLabel = shared.config.get(fromAddress, 'label')
-            if fromLabel == '':
+            else:
                 fromLabel = fromAddress
 
             toLabel = ''
@@ -820,7 +824,7 @@ class MyForm(QtGui.QMainWindow):
 
             if status == 'awaitingpubkey':
                 statusText = _translate(
-                    "MainWindow", "Waiting on their encryption key. Will request it again soon.")
+                    "MainWindow", "Waiting for their encryption key. Will request it again soon.")
             elif status == 'doingpowforpubkey':
                 statusText = _translate(
                     "MainWindow", "Encryption key request queued.")
@@ -828,35 +832,35 @@ class MyForm(QtGui.QMainWindow):
                 statusText = _translate(
                     "MainWindow", "Queued.")
             elif status == 'msgsent':
-                statusText = _translate("MainWindow", "Message sent. Waiting on acknowledgement. Sent at %1").arg(
-                    unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                statusText = _translate("MainWindow", "Message sent. Waiting for acknowledgement. Sent at %1").arg(
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'msgsentnoackexpected':
                 statusText = _translate("MainWindow", "Message sent. Sent at %1").arg(
-                    unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'doingmsgpow':
                 statusText = _translate(
                     "MainWindow", "Need to do work to send message. Work is queued.")
             elif status == 'ackreceived':
                 statusText = _translate("MainWindow", "Acknowledgement of the message received %1").arg(
-                    unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'broadcastqueued':
                 statusText = _translate(
                     "MainWindow", "Broadcast queued.")
             elif status == 'broadcastsent':
-                statusText = _translate("MainWindow", "Broadcast on %1").arg(unicode(strftime(
-                    shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                statusText = _translate("MainWindow", "Broadcast on %1").arg(
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'toodifficult':
                 statusText = _translate("MainWindow", "Problem: The work demanded by the recipient is more difficult than you are willing to do. %1").arg(
-                    unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'badkey':
                 statusText = _translate("MainWindow", "Problem: The recipient\'s encryption key is no good. Could not encrypt message. %1").arg(
-                    unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'forcepow':
                 statusText = _translate(
                     "MainWindow", "Forced difficulty override. Send should start soon.")
             else:
-                statusText = _translate("MainWindow", "Unknown status: %1 %2").arg(status).arg(unicode(
-                    strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                statusText = _translate("MainWindow", "Unknown status: %1 %2").arg(status).arg(
+                    l10n.formatTimestamp(lastactiontime))
             newItem = myTableWidgetItem(statusText)
             newItem.setToolTip(statusText)
             newItem.setData(Qt.UserRole, QByteArray(ackdata))
@@ -963,10 +967,8 @@ class MyForm(QtGui.QMainWindow):
                 subject_item.setFont(font)
             self.ui.tableWidgetInbox.setItem(0, 2, subject_item)
             # time received
-            time_item = myTableWidgetItem(unicode(strftime(shared.config.get(
-                'bitmessagesettings', 'timeformat'), localtime(int(received))), 'utf-8'))
-            time_item.setToolTip(unicode(strftime(shared.config.get(
-                'bitmessagesettings', 'timeformat'), localtime(int(received))), 'utf-8'))
+            time_item = myTableWidgetItem(l10n.formatTimestamp(received))
+            time_item.setToolTip(l10n.formatTimestamp(received))
             time_item.setData(Qt.UserRole, QByteArray(msgid))
             time_item.setData(33, int(received))
             time_item.setFlags(
@@ -980,8 +982,7 @@ class MyForm(QtGui.QMainWindow):
 
     # create application indicator
     def appIndicatorInit(self, app):
-        self.tray = QSystemTrayIcon(QtGui.QIcon(
-            ":/newPrefix/images/can-icon-24px-red.png"), app)
+        self.initTrayIcon("can-icon-24px-red.png", app)
         if sys.platform[0:3] == 'win':
             traySignal = "activated(QSystemTrayIcon::ActivationReason)"
             QtCore.QObject.connect(self.tray, QtCore.SIGNAL(
@@ -1465,6 +1466,31 @@ class MyForm(QtGui.QMainWindow):
         self.ui.labelPubkeyCount.setText(_translate(
             "MainWindow", "Processed %1 public keys.").arg(str(shared.numberOfPubkeysProcessed)))
 
+    def formatBytes(self, num):
+        for x in ['bytes','KB','MB','GB']:
+            if num < 1000.0:
+                return "%3.0f %s" % (num, x)
+            num /= 1000.0
+        return "%3.0f %s" % (num, 'TB')
+    
+    def formatByteRate(self, num):
+        num /= 1000
+        return "%4.0f KB" % num
+
+    def updateNumberOfBytes(self):
+        """
+        This function is run every two seconds, so we divide the rate of bytes
+        sent and received by 2.
+        """
+        self.ui.labelBytesRecvCount.setText(_translate(
+            "MainWindow", "Down: %1/s  Total: %2").arg(self.formatByteRate(shared.numberOfBytesReceived/2), self.formatBytes(self.totalNumberOfBytesReceived)))
+        self.ui.labelBytesSentCount.setText(_translate(
+            "MainWindow", "Up: %1/s  Total: %2").arg(self.formatByteRate(shared.numberOfBytesSent/2), self.formatBytes(self.totalNumberOfBytesSent)))
+        self.totalNumberOfBytesReceived += shared.numberOfBytesReceived
+        self.totalNumberOfBytesSent += shared.numberOfBytesSent
+        shared.numberOfBytesReceived = 0
+        shared.numberOfBytesSent = 0
+
     def updateNetworkStatusTab(self):
         # print 'updating network status tab'
         totalNumberOfConnectionsFromAllStreams = 0  # One would think we could use len(sendDataQueues) for this but the number doesn't always match: just because we have a sendDataThread running doesn't mean that the connection has been fully established (with the exchange of version messages).
@@ -1518,6 +1544,7 @@ class MyForm(QtGui.QMainWindow):
         self.ui.labelLookupsPerSecond.setText(_translate(
             "MainWindow", "Inventory lookups per second: %1").arg(str(shared.numberOfInventoryLookupsPerformed/2)))
         shared.numberOfInventoryLookupsPerformed = 0
+        self.updateNumberOfBytes()
 
     # Indicates whether or not there is a connection to the Bitmessage network
     connected = False
@@ -1539,8 +1566,7 @@ class MyForm(QtGui.QMainWindow):
             if self.actionStatus is not None:
                 self.actionStatus.setText(_translate(
                     "MainWindow", "Not Connected"))
-                self.tray.setIcon(QtGui.QIcon(
-                    ":/newPrefix/images/can-icon-24px-red.png"))
+                self.setTrayIconFile("can-icon-24px-red.png")
         if color == 'yellow':
             if self.statusBar().currentMessage() == 'Warning: You are currently not connected. Bitmessage will do the work necessary to send the message but it won\'t send until you connect.':
                 self.statusBar().showMessage('')
@@ -1557,8 +1583,7 @@ class MyForm(QtGui.QMainWindow):
             if self.actionStatus is not None:
                 self.actionStatus.setText(_translate(
                     "MainWindow", "Connected"))
-                self.tray.setIcon(QtGui.QIcon(
-                    ":/newPrefix/images/can-icon-24px-yellow.png"))
+                self.setTrayIconFile("can-icon-24px-yellow.png")
         if color == 'green':
             if self.statusBar().currentMessage() == 'Warning: You are currently not connected. Bitmessage will do the work necessary to send the message but it won\'t send until you connect.':
                 self.statusBar().showMessage('')
@@ -1574,8 +1599,59 @@ class MyForm(QtGui.QMainWindow):
             if self.actionStatus is not None:
                 self.actionStatus.setText(_translate(
                     "MainWindow", "Connected"))
-                self.tray.setIcon(QtGui.QIcon(
-                    ":/newPrefix/images/can-icon-24px-green.png"))
+                self.setTrayIconFile("can-icon-24px-green.png")
+
+    def initTrayIcon(self, iconFileName, app):
+        self.currentTrayIconFileName = iconFileName
+        self.tray = QSystemTrayIcon(
+            self.calcTrayIcon(iconFileName, self.findInboxUnreadCount()), app)
+
+    def setTrayIconFile(self, iconFileName):
+        self.currentTrayIconFileName = iconFileName
+        self.drawTrayIcon(iconFileName, self.findInboxUnreadCount())
+
+    def calcTrayIcon(self, iconFileName, inboxUnreadCount):
+        pixmap = QtGui.QPixmap(":/newPrefix/images/"+iconFileName)
+        if inboxUnreadCount > 0:
+            # choose font and calculate font parameters
+            fontName = "Lucida"
+            fontSize = 10
+            font = QtGui.QFont(fontName, fontSize, QtGui.QFont.Bold)
+            fontMetrics = QtGui.QFontMetrics(font)
+            # text
+            txt = str(inboxUnreadCount)
+            rect = fontMetrics.boundingRect(txt)
+            # margins that we add in the top-right corner
+            marginX = 2
+            marginY = 0 # it looks like -2 is also ok due to the error of metric
+            # if it renders too wide we need to change it to a plus symbol
+            if rect.width() > 20:
+                txt = "+"
+                fontSize = 15
+                font = QtGui.QFont(fontName, fontSize, QtGui.QFont.Bold)
+                fontMetrics = QtGui.QFontMetrics(font)
+                rect = fontMetrics.boundingRect(txt)
+            # draw text
+            painter = QPainter()
+            painter.begin(pixmap)
+            painter.setPen(QtGui.QPen(QtGui.QColor(255, 0, 0), Qt.SolidPattern))
+            painter.setFont(font)
+            painter.drawText(24-rect.right()-marginX, -rect.top()+marginY, txt)
+            painter.end()
+        return QtGui.QIcon(pixmap)
+
+    def drawTrayIcon(self, iconFileName, inboxUnreadCount):
+        self.tray.setIcon(self.calcTrayIcon(iconFileName, inboxUnreadCount))
+
+    def changedInboxUnread(self):
+        self.drawTrayIcon(self.currentTrayIconFileName, self.findInboxUnreadCount())
+
+    def findInboxUnreadCount(self):
+        queryreturn = sqlQuery('''SELECT count(*) from inbox WHERE folder='inbox' and read=0''')
+        cnt = 0
+        for row in queryreturn:
+            cnt, = row
+        return int(cnt)
 
     def updateSentItemStatusByHash(self, toRipe, textToDisplay):
         for i in range(self.ui.tableWidgetSent.rowCount()):
@@ -1622,6 +1698,7 @@ class MyForm(QtGui.QMainWindow):
                     "MainWindow", "Message trashed"))
                 self.ui.tableWidgetInbox.removeRow(i)
                 break
+        self.changedInboxUnread()
 
     def displayAlert(self, title, text, exitAfterUserClicksOk):
         self.statusBar().showMessage(text)
@@ -1979,12 +2056,9 @@ class MyForm(QtGui.QMainWindow):
         self.ui.tableWidgetSent.setItem(0, 2, newItem)
         # newItem =  QtGui.QTableWidgetItem('Doing work necessary to send
         # broadcast...'+
-        # unicode(strftime(shared.config.get('bitmessagesettings',
-        # 'timeformat'),localtime(int(time.time()))),'utf-8'))
-        newItem = myTableWidgetItem(_translate("MainWindow", "Work is queued. %1").arg(unicode(strftime(shared.config.get(
-            'bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8')))
-        newItem.setToolTip(_translate("MainWindow", "Work is queued. %1").arg(unicode(strftime(shared.config.get(
-            'bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8')))
+        # l10n.formatTimestamp())
+        newItem = myTableWidgetItem(_translate("MainWindow", "Work is queued. %1").arg(l10n.formatTimestamp()))
+        newItem.setToolTip(_translate("MainWindow", "Work is queued. %1").arg(l10n.formatTimestamp()))
         newItem.setData(Qt.UserRole, QByteArray(ackdata))
         newItem.setData(33, int(time.time()))
         self.ui.tableWidgetSent.setItem(0, 3, newItem)
@@ -2051,10 +2125,8 @@ class MyForm(QtGui.QMainWindow):
         #newItem.setData(Qt.UserRole, unicode(message, 'utf-8)')) # No longer hold the message in the table; we'll use a SQL query to display it as needed.
         newItem.setFont(font)
         self.ui.tableWidgetInbox.setItem(0, 2, newItem)
-        newItem = myTableWidgetItem(unicode(strftime(shared.config.get(
-            'bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8'))
-        newItem.setToolTip(unicode(strftime(shared.config.get(
-            'bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8'))
+        newItem = myTableWidgetItem(l10n.formatTimestamp())
+        newItem.setToolTip(l10n.formatTimestamp())
         newItem.setData(Qt.UserRole, QByteArray(inventoryHash))
         newItem.setData(33, int(time.time()))
         newItem.setFont(font)
@@ -2063,15 +2135,15 @@ class MyForm(QtGui.QMainWindow):
         self.ubuntuMessagingMenuUpdate(True, newItem, toLabel)
 
     def click_pushButtonAddAddressBook(self):
-        self.NewSubscriptionDialogInstance = NewSubscriptionDialog(self)
-        if self.NewSubscriptionDialogInstance.exec_():
-            if self.NewSubscriptionDialogInstance.ui.labelSubscriptionAddressCheck.text() == _translate("MainWindow", "Address is valid."):
+        self.AddAddressDialogInstance = AddAddressDialog(self)
+        if self.AddAddressDialogInstance.exec_():
+            if self.AddAddressDialogInstance.ui.labelAddressCheck.text() == _translate("MainWindow", "Address is valid."):
                 # First we must check to see if the address is already in the
                 # address book. The user cannot add it again or else it will
                 # cause problems when updating and deleting the entry.
                 address = addBMIfNotPresent(str(
-                    self.NewSubscriptionDialogInstance.ui.lineEditSubscriptionAddress.text()))
-                label = self.NewSubscriptionDialogInstance.ui.newsubscriptionlabel.text().toUtf8()
+                    self.AddAddressDialogInstance.ui.lineEditAddress.text()))
+                label = self.AddAddressDialogInstance.ui.newAddressLabel.text().toUtf8()
                 self.addEntryToAddressBook(address,label)
             else:
                 self.statusBar().showMessage(_translate(
@@ -2120,7 +2192,7 @@ class MyForm(QtGui.QMainWindow):
     def click_pushButtonAddSubscription(self):
         self.NewSubscriptionDialogInstance = NewSubscriptionDialog(self)
         if self.NewSubscriptionDialogInstance.exec_():
-            if self.NewSubscriptionDialogInstance.ui.labelSubscriptionAddressCheck.text() != _translate("MainWindow", "Address is valid."):
+            if self.NewSubscriptionDialogInstance.ui.labelAddressCheck.text() != _translate("MainWindow", "Address is valid."):
                 self.statusBar().showMessage(_translate("MainWindow", "The address you entered was invalid. Ignoring it."))
                 return
             address = addBMIfNotPresent(str(self.NewSubscriptionDialogInstance.ui.lineEditSubscriptionAddress.text()))
@@ -2130,6 +2202,22 @@ class MyForm(QtGui.QMainWindow):
                 return
             label = self.NewSubscriptionDialogInstance.ui.newsubscriptionlabel.text().toUtf8()
             self.addSubscription(address, label)
+            # Now, if the user wants to display old broadcasts, let's get them out of the inventory and put them 
+            # in the objectProcessorQueue to be processed
+            if self.NewSubscriptionDialogInstance.ui.checkBoxDisplayMessagesAlreadyInInventory.isChecked():
+                status, addressVersion, streamNumber, ripe = decodeAddress(address)
+                shared.flushInventory()
+                doubleHashOfAddressData = hashlib.sha512(hashlib.sha512(encodeVarint(
+                    addressVersion) + encodeVarint(streamNumber) + ripe).digest()).digest()
+                tag = doubleHashOfAddressData[32:]
+                queryreturn = sqlQuery(
+                    '''select payload from inventory where objecttype='broadcast' and tag=?''', tag)
+                for row in queryreturn:
+                    payload, = row
+                    objectType = 'broadcast'
+                    with shared.objectProcessorQueueSizeLock:
+                        shared.objectProcessorQueueSize += len(payload)
+                        shared.objectProcessorQueue.put((objectType,payload))
 
     def loadBlackWhiteList(self):
         # Initialize the Blacklist or Whitelist table
@@ -2182,6 +2270,8 @@ class MyForm(QtGui.QMainWindow):
                 self.settingsDialogInstance.ui.checkBoxWillinglySendToMobile.isChecked()))
             shared.config.set('bitmessagesettings', 'useidenticons', str(
                 self.settingsDialogInstance.ui.checkBoxUseIdenticons.isChecked()))
+            shared.config.set('bitmessagesettings', 'replybelow', str(
+                self.settingsDialogInstance.ui.checkBoxReplyBelow.isChecked()))
                 
             lang_ind = int(self.settingsDialogInstance.ui.languageComboBox.currentIndex())
             if not languages[lang_ind] == 'other':
@@ -2368,11 +2458,11 @@ class MyForm(QtGui.QMainWindow):
             self.ui.tabWidget.setTabText(6, 'Whitelist')
 
     def click_pushButtonAddBlacklist(self):
-        self.NewBlacklistDialogInstance = NewSubscriptionDialog(self)
+        self.NewBlacklistDialogInstance = AddAddressDialog(self)
         if self.NewBlacklistDialogInstance.exec_():
-            if self.NewBlacklistDialogInstance.ui.labelSubscriptionAddressCheck.text() == _translate("MainWindow", "Address is valid."):
+            if self.NewBlacklistDialogInstance.ui.labelAddressCheck.text() == _translate("MainWindow", "Address is valid."):
                 address = addBMIfNotPresent(str(
-                    self.NewBlacklistDialogInstance.ui.lineEditSubscriptionAddress.text()))
+                    self.NewBlacklistDialogInstance.ui.lineEditAddress.text()))
                 # First we must check to see if the address is already in the
                 # address book. The user cannot add it again or else it will
                 # cause problems when updating and deleting the entry.
@@ -2386,7 +2476,7 @@ class MyForm(QtGui.QMainWindow):
                     self.ui.tableWidgetBlacklist.setSortingEnabled(False)
                     self.ui.tableWidgetBlacklist.insertRow(0)
                     newItem = QtGui.QTableWidgetItem(unicode(
-                        self.NewBlacklistDialogInstance.ui.newsubscriptionlabel.text().toUtf8(), 'utf-8'))
+                        self.NewBlacklistDialogInstance.ui.newAddressLabel.text().toUtf8(), 'utf-8'))
                     newItem.setIcon(avatarize(address))
                     self.ui.tableWidgetBlacklist.setItem(0, 0, newItem)
                     newItem = QtGui.QTableWidgetItem(address)
@@ -2394,7 +2484,7 @@ class MyForm(QtGui.QMainWindow):
                         QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
                     self.ui.tableWidgetBlacklist.setItem(0, 1, newItem)
                     self.ui.tableWidgetBlacklist.setSortingEnabled(True)
-                    t = (str(self.NewBlacklistDialogInstance.ui.newsubscriptionlabel.text().toUtf8()), address, True)
+                    t = (str(self.NewBlacklistDialogInstance.ui.newAddressLabel.text().toUtf8()), address, True)
                     if shared.config.get('bitmessagesettings', 'blackwhitelist') == 'black':
                         sql = '''INSERT INTO blacklist VALUES (?,?,?)'''
                     else:
@@ -2512,19 +2602,22 @@ class MyForm(QtGui.QMainWindow):
             '''select message from inbox where msgid=?''', msgid)
         if queryreturn != []:
             for row in queryreturn:
-                messageAtCurrentInboxRow, = row 
+                messageText, = row
 
-        lines = messageAtCurrentInboxRow.split('\n')
-        for i in xrange(len(lines)):
+        lines = messageText.split('\n')
+        totalLines = len(lines)
+        for i in xrange(totalLines):
             if 'Message ostensibly from ' in lines[i]:
                 lines[i] = '<p style="font-size: 12px; color: grey;">%s</span></p>' % (
                     lines[i])
             elif lines[i] == '------------------------------------------------------':
                 lines[i] = '<hr>'
-        content = ''
-        for i in xrange(len(lines)):
-            content += lines[i]
-        content = content.replace('\n\n', '<br><br>')
+            elif lines[i] == '' and (i+1) < totalLines and \
+                 lines[i+1] != '------------------------------------------------------':
+                lines[i] = '<br><br>'
+        content = ' '.join(lines) # To keep the whitespace between lines
+        content = shared.fixPotentiallyInvalidUTF8Data(content)
+        content = unicode(content, 'utf-8)')
         self.ui.textEditInboxMessage.setHtml(QtCore.QString(content))
 
     def on_action_InboxMarkUnread(self):
@@ -2539,10 +2632,33 @@ class MyForm(QtGui.QMainWindow):
             self.ui.tableWidgetInbox.item(currentRow, 1).setFont(font)
             self.ui.tableWidgetInbox.item(currentRow, 2).setFont(font)
             self.ui.tableWidgetInbox.item(currentRow, 3).setFont(font)
+        self.changedInboxUnread()
         # self.ui.tableWidgetInbox.selectRow(currentRow + 1) 
         # This doesn't de-select the last message if you try to mark it unread, but that doesn't interfere. Might not be necessary.
         # We could also select upwards, but then our problem would be with the topmost message.
         # self.ui.tableWidgetInbox.clearSelection() manages to mark the message as read again.
+
+    # Format predefined text on message reply.
+    def quoted_text(self, message):
+        if not shared.safeConfigGetBoolean('bitmessagesettings', 'replybelow'):
+          return '\n\n------------------------------------------------------\n' + message
+
+        quoteWrapper = textwrap.TextWrapper(replace_whitespace = False,
+                                            initial_indent = '> ',
+                                            subsequent_indent = '> ',
+                                            break_long_words = False,
+                                            break_on_hyphens = False)
+        def quote_line(line):
+            # Do quote empty lines.
+            if line == '' or line.isspace():
+                return '> '
+            # Quote already quoted lines, but do not wrap them.
+            elif line[0:2] == '> ':
+                return '> ' + line
+            # Wrap and quote lines/paragraphs new to this message.
+            else:
+                return quoteWrapper.fill(line)
+        return '\n'.join([quote_line(l) for l in message.splitlines()]) + '\n\n'
 
     def on_action_InboxReply(self):
         currentInboxRow = self.ui.tableWidgetInbox.currentRow()
@@ -2578,9 +2694,16 @@ class MyForm(QtGui.QMainWindow):
             if shared.safeConfigGetBoolean(toAddressAtCurrentInboxRow, 'chan'):
                 print 'original sent to a chan. Setting the to address in the reply to the chan address.'
                 self.ui.lineEditTo.setText(str(toAddressAtCurrentInboxRow))
-
-        self.ui.comboBoxSendFrom.setCurrentIndex(0)
-        self.ui.textEditMessage.setText('\n\n------------------------------------------------------\n' + unicode(messageAtCurrentInboxRow, 'utf-8)'))
+        
+        listOfAddressesInComboBoxSendFrom = [str(self.ui.comboBoxSendFrom.itemData(i).toPyObject()) for i in range(self.ui.comboBoxSendFrom.count())]
+        if toAddressAtCurrentInboxRow in listOfAddressesInComboBoxSendFrom:
+            currentIndex = listOfAddressesInComboBoxSendFrom.index(toAddressAtCurrentInboxRow)
+            self.ui.comboBoxSendFrom.setCurrentIndex(currentIndex)
+        else:
+            self.ui.comboBoxSendFrom.setCurrentIndex(0)
+        
+        quotedText = self.quoted_text(unicode(messageAtCurrentInboxRow, 'utf-8'))
+        self.ui.textEditMessage.setText(quotedText)
         if self.ui.tableWidgetInbox.item(currentInboxRow, 2).text()[0:3] in ['Re:', 'RE:']:
             self.ui.lineEditSubject.setText(
                 self.ui.tableWidgetInbox.item(currentInboxRow, 2).text())
@@ -3062,7 +3185,6 @@ class MyForm(QtGui.QMainWindow):
     def tableWidgetInboxItemClicked(self):
         currentRow = self.ui.tableWidgetInbox.currentRow()
         if currentRow >= 0:
-            
             font = QFont()
             font.setBold(False)
             self.ui.textEditInboxMessage.setCurrentFont(font)
@@ -3105,6 +3227,7 @@ class MyForm(QtGui.QMainWindow):
                 currentRow, 3).data(Qt.UserRole).toPyObject())
             self.ubuntuMessagingMenuClear(inventoryHash)
             sqlExecute('''update inbox set read=1 WHERE msgid=?''', inventoryHash)
+            self.changedInboxUnread()
 
     def tableWidgetSentItemClicked(self):
         currentRow = self.ui.tableWidgetSent.currentRow()
@@ -3243,9 +3366,11 @@ class settingsDialog(QtGui.QDialog):
             shared.safeConfigGetBoolean('bitmessagesettings', 'willinglysendtomobile'))
         self.ui.checkBoxUseIdenticons.setChecked(
             shared.safeConfigGetBoolean('bitmessagesettings', 'useidenticons'))
+        self.ui.checkBoxReplyBelow.setChecked(
+            shared.safeConfigGetBoolean('bitmessagesettings', 'replybelow'))
         
         global languages 
-        languages = ['system','en','eo','fr','de','es','ru','en_pirate','other']
+        languages = ['system','en','eo','fr','de','es','ru','no','ar','zh_cn','ja','nl','en_pirate','other']
         user_countrycode = str(shared.config.get('bitmessagesettings', 'userlocale'))
         if user_countrycode in languages:
             curr_index = languages.index(user_countrycode)
@@ -3465,6 +3590,40 @@ class SpecialAddressBehaviorDialog(QtGui.QDialog):
         QtGui.QWidget.resize(self, QtGui.QWidget.sizeHint(self))
 
 
+class AddAddressDialog(QtGui.QDialog):
+
+    def __init__(self, parent):
+        QtGui.QWidget.__init__(self, parent)
+        self.ui = Ui_AddAddressDialog()
+        self.ui.setupUi(self)
+        self.parent = parent
+        QtCore.QObject.connect(self.ui.lineEditAddress, QtCore.SIGNAL(
+            "textChanged(QString)"), self.addressChanged)
+
+    def addressChanged(self, QString):
+        status, a, b, c = decodeAddress(str(QString))
+        if status == 'missingbm':
+            self.ui.labelAddressCheck.setText(_translate(
+                "MainWindow", "The address should start with ''BM-''"))
+        elif status == 'checksumfailed':
+            self.ui.labelAddressCheck.setText(_translate(
+                "MainWindow", "The address is not typed or copied correctly (the checksum failed)."))
+        elif status == 'versiontoohigh':
+            self.ui.labelAddressCheck.setText(_translate(
+                "MainWindow", "The version number of this address is higher than this software can support. Please upgrade Bitmessage."))
+        elif status == 'invalidcharacters':
+            self.ui.labelAddressCheck.setText(_translate(
+                "MainWindow", "The address contains invalid characters."))
+        elif status == 'ripetooshort':
+            self.ui.labelAddressCheck.setText(_translate(
+                "MainWindow", "Some data encoded in the address is too short."))
+        elif status == 'ripetoolong':
+            self.ui.labelAddressCheck.setText(_translate(
+                "MainWindow", "Some data encoded in the address is too long."))
+        elif status == 'success':
+            self.ui.labelAddressCheck.setText(
+                _translate("MainWindow", "Address is valid."))
+            
 class NewSubscriptionDialog(QtGui.QDialog):
 
     def __init__(self, parent):
@@ -3473,31 +3632,56 @@ class NewSubscriptionDialog(QtGui.QDialog):
         self.ui.setupUi(self)
         self.parent = parent
         QtCore.QObject.connect(self.ui.lineEditSubscriptionAddress, QtCore.SIGNAL(
-            "textChanged(QString)"), self.subscriptionAddressChanged)
+            "textChanged(QString)"), self.addressChanged)
+        self.ui.checkBoxDisplayMessagesAlreadyInInventory.setText(
+            _translate("MainWindow", "Enter an address above."))
 
-    def subscriptionAddressChanged(self, QString):
-        status, a, b, c = decodeAddress(str(QString))
+    def addressChanged(self, QString):
+        self.ui.checkBoxDisplayMessagesAlreadyInInventory.setEnabled(False)
+        self.ui.checkBoxDisplayMessagesAlreadyInInventory.setChecked(False)
+        status, addressVersion, streamNumber, ripe = decodeAddress(str(QString))
         if status == 'missingbm':
-            self.ui.labelSubscriptionAddressCheck.setText(_translate(
+            self.ui.labelAddressCheck.setText(_translate(
                 "MainWindow", "The address should start with ''BM-''"))
         elif status == 'checksumfailed':
-            self.ui.labelSubscriptionAddressCheck.setText(_translate(
+            self.ui.labelAddressCheck.setText(_translate(
                 "MainWindow", "The address is not typed or copied correctly (the checksum failed)."))
         elif status == 'versiontoohigh':
-            self.ui.labelSubscriptionAddressCheck.setText(_translate(
+            self.ui.labelAddressCheck.setText(_translate(
                 "MainWindow", "The version number of this address is higher than this software can support. Please upgrade Bitmessage."))
         elif status == 'invalidcharacters':
-            self.ui.labelSubscriptionAddressCheck.setText(_translate(
+            self.ui.labelAddressCheck.setText(_translate(
                 "MainWindow", "The address contains invalid characters."))
         elif status == 'ripetooshort':
-            self.ui.labelSubscriptionAddressCheck.setText(_translate(
+            self.ui.labelAddressCheck.setText(_translate(
                 "MainWindow", "Some data encoded in the address is too short."))
         elif status == 'ripetoolong':
-            self.ui.labelSubscriptionAddressCheck.setText(_translate(
+            self.ui.labelAddressCheck.setText(_translate(
                 "MainWindow", "Some data encoded in the address is too long."))
         elif status == 'success':
-            self.ui.labelSubscriptionAddressCheck.setText(
+            self.ui.labelAddressCheck.setText(
                 _translate("MainWindow", "Address is valid."))
+            if addressVersion <= 3:
+                self.ui.checkBoxDisplayMessagesAlreadyInInventory.setText(
+                    _translate("MainWindow", "Address is an old type. We cannot display its past broadcasts."))
+            else:
+                shared.flushInventory()
+                doubleHashOfAddressData = hashlib.sha512(hashlib.sha512(encodeVarint(
+                    addressVersion) + encodeVarint(streamNumber) + ripe).digest()).digest()
+                tag = doubleHashOfAddressData[32:]
+                queryreturn = sqlQuery(
+                    '''select hash from inventory where objecttype='broadcast' and tag=?''', tag)
+                if len(queryreturn) == 0:
+                    self.ui.checkBoxDisplayMessagesAlreadyInInventory.setText(
+                        _translate("MainWindow", "There are no recent broadcasts from this address to display."))
+                elif len(queryreturn) == 1:
+                    self.ui.checkBoxDisplayMessagesAlreadyInInventory.setEnabled(True)
+                    self.ui.checkBoxDisplayMessagesAlreadyInInventory.setText(
+                        _translate("MainWindow", "Display the %1 recent broadcast from this address.").arg(str(len(queryreturn))))
+                else:
+                    self.ui.checkBoxDisplayMessagesAlreadyInInventory.setEnabled(True)
+                    self.ui.checkBoxDisplayMessagesAlreadyInInventory.setText(
+                        _translate("MainWindow", "Display the %1 recent broadcasts from this address.").arg(str(len(queryreturn))))
 
 
 class NewAddressDialog(QtGui.QDialog):
@@ -3593,6 +3777,8 @@ class UISignaler(QThread):
                 self.emit(SIGNAL("updateNumberOfBroadcastsProcessed()"))
             elif command == 'setStatusIcon':
                 self.emit(SIGNAL("setStatusIcon(PyQt_PyObject)"), data)
+            elif command == 'changedInboxUnread':
+                self.emit(SIGNAL("changedInboxUnread(PyQt_PyObject)"), data)
             elif command == 'rerenderInboxFromLabels':
                 self.emit(SIGNAL("rerenderInboxFromLabels()"))
             elif command == 'rerenderSentToLabels':
@@ -3614,52 +3800,12 @@ def run():
     app = QtGui.QApplication(sys.argv)
     translator = QtCore.QTranslator()
     
-    try:
-        locale_countrycode = str(locale.getdefaultlocale()[0])
-    except:
-        # The above is not compatible with all versions of OSX.
-        locale_countrycode = "en_US" # Default to english.
-    locale_lang = locale_countrycode[0:2]
-    user_countrycode = str(shared.config.get('bitmessagesettings', 'userlocale'))
-    user_lang = user_countrycode[0:2]
-    try:
-        translation_path = os.path.join(sys._MEIPASS, "translations/bitmessage_")
-    except Exception, e:
-        translation_path = "translations/bitmessage_"
-    
-    if shared.config.get('bitmessagesettings', 'userlocale') == 'system':
-        # try to detect the users locale otherwise fallback to English
-        try:
-            # try the users full locale, e.g. 'en_US':
-            # since we usually only provide languages, not localozations
-            # this will usually fail
-            translator.load(translation_path + locale_countrycode)
-        except:
-            try:
-                # try the users locale language, e.g. 'en':
-                # since we usually only provide languages, not localozations
-                # this will usually succeed
-                translator.load(translation_path + locale_lang)
-            except:
-                # as English is already the default language, we don't
-                # need to do anything. No need to translate.
-                pass
-    else:
-        try:
-            # check if the user input is a valid translation file:
-            # since user_countrycode will be usually set by the combobox
-            # it will usually just be a language code
-            translator.load(translation_path + user_countrycode)
-        except:
-            try:
-                # check if the user lang is a valid translation file:
-                # this is only needed if the user manually set his 'userlocale'
-                # in the keys.dat to a countrycode (e.g. 'de_CH')
-                translator.load(translation_path + user_lang)
-            except:
-                # as English is already the default language, we don't
-                # need to do anything. No need to translate.
-                pass
+    translationpath = os.path.join(
+        getattr(sys, '_MEIPASS', ''),
+        'translations',
+        'bitmessage_' + l10n.getTranslationLanguage()
+    )
+    translator.load(translationpath)
 
     QtGui.QApplication.installTranslator(translator)
     app.setStyleSheet("QStatusBar::item { border: 0px solid black }")

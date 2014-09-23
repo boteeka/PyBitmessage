@@ -5,10 +5,23 @@ import os
 import locale
 import random
 import string
+import platform
+from distutils.version import StrictVersion
 
 from namecoin import ensureNamecoinOptions
 
 storeConfigFilesInSameDirectoryAsProgramByDefault = False  # The user may de-select Portable Mode in the settings if they want the config files to stay in the application data folder.
+
+def _loadTrustedPeer():
+    try:
+        trustedPeer = shared.config.get('bitmessagesettings', 'trustedpeer')
+    except ConfigParser.Error:
+        # This probably means the trusted peer wasn't specified so we
+        # can just leave it as None
+        return
+
+    host, port = trustedPeer.split(':')
+    shared.trustedPeer = shared.Peer(host, int(port))
 
 def loadConfig():
     if shared.appdata:
@@ -88,6 +101,7 @@ def loadConfig():
         shared.config.set('bitmessagesettings', 'userlocale', 'system')
         shared.config.set('bitmessagesettings', 'useidenticons', 'True')
         shared.config.set('bitmessagesettings', 'identiconsuffix', ''.join(random.choice("123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz") for x in range(12))) # a twelve character pseudo-password to salt the identicons
+        shared.config.set('bitmessagesettings', 'replybelow', 'False')
         
          #start:UI setting to stop trying to send messages after X days/months
         shared.config.set(
@@ -119,3 +133,15 @@ def loadConfig():
             os.umask(0o077)
         with open(shared.appdata + 'keys.dat', 'wb') as configfile:
             shared.config.write(configfile)
+
+    _loadTrustedPeer()
+
+def isOurOperatingSystemLimitedToHavingVeryFewHalfOpenConnections():
+    try:
+        VER_THIS=StrictVersion(platform.version())
+        if sys.platform[0:3]=="win":
+            return StrictVersion("5.1.2600")<=VER_THIS and StrictVersion("6.0.6000")>=VER_THIS
+        return False
+    except Exception as err:
+        print 'An Exception occurred within isOurOperatingSystemLimitedToHavingVeryFewHalfOpenConnections:', err
+        return False

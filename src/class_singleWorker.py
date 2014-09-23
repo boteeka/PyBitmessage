@@ -8,11 +8,12 @@ from addresses import *
 import highlevelcrypto
 import proofofwork
 import sys
-from class_addressGenerator import pointMult
 import tr
 from debug import logger
 from helper_sql import *
 import helper_inbox
+from helper_generic import addDataPadding
+import l10n
 
 # This thread, of which there is only one, does the heavy lifting:
 # calculating POWs.
@@ -260,7 +261,6 @@ class singleWorker(threading.Thread):
         payload = pack('>Q', (embeddedTime))
         payload += encodeVarint(addressVersionNumber)  # Address version number
         payload += encodeVarint(streamNumber)
-        dataToStoreInOurPubkeysTable = payload # used if this is a chan. We'll add more data further down.
 
         dataToEncrypt = '\x00\x00\x00\x01'  # bitfield of features supported by me (see the wiki).
 
@@ -291,8 +291,6 @@ class singleWorker(threading.Thread):
         dataToEncrypt += encodeVarint(shared.config.getint(
             myAddress, 'payloadlengthextrabytes'))
 
-        dataToStoreInOurPubkeysTable += dataToEncrypt # dataToStoreInOurPubkeysTable is used if this is a chan
-
         signature = highlevelcrypto.sign(payload + dataToEncrypt, privSigningKeyHex)
         dataToEncrypt += encodeVarint(len(signature))
         dataToEncrypt += signature
@@ -307,7 +305,7 @@ class singleWorker(threading.Thread):
             addressVersionNumber) + encodeVarint(streamNumber) + hash).digest()).digest()
         payload += doubleHashOfAddressData[32:] # the tag
         privEncryptionKey = doubleHashOfAddressData[:32]
-        pubEncryptionKey = pointMult(privEncryptionKey)
+        pubEncryptionKey = highlevelcrypto.pointMult(privEncryptionKey)
         payload += highlevelcrypto.encrypt(
             dataToEncrypt, pubEncryptionKey.encode('hex'))
 
@@ -337,10 +335,8 @@ class singleWorker(threading.Thread):
                 myAddress, 'lastpubkeysendtime', str(int(time.time())))
             with open(shared.appdata + 'keys.dat', 'wb') as configfile:
                 shared.config.write(configfile)
-        except:
-            # The user deleted the address out of the keys.dat file before this
-            # finished.
-            pass
+        except Exception as err:
+            logger.error('Error: Couldn\'t add the lastpubkeysendtime to the keys.dat file. Error message: %s' % err)
 
     def sendBroadcast(self):
         queryreturn = sqlQuery(
@@ -386,7 +382,10 @@ class singleWorker(threading.Thread):
             if addressVersionNumber >= 4:
                 doubleHashOfAddressData = hashlib.sha512(hashlib.sha512(encodeVarint(
                     addressVersionNumber) + encodeVarint(streamNumber) + ripe).digest()).digest()
-                payload += doubleHashOfAddressData[32:]  # the tag
+                tag = doubleHashOfAddressData[32:]
+                payload += tag
+            else:
+                tag = ''
 
             if addressVersionNumber <= 3:
                 dataToEncrypt = encodeVarint(2)  # broadcast version
@@ -416,7 +415,8 @@ class singleWorker(threading.Thread):
                     addressVersionNumber) + encodeVarint(streamNumber) + ripe).digest()[:32]
             else:
                 privEncryptionKey = doubleHashOfAddressData[:32]
-            pubEncryptionKey = pointMult(privEncryptionKey)
+
+            pubEncryptionKey = highlevelcrypto.pointMult(privEncryptionKey)
             payload += highlevelcrypto.encrypt(
                 dataToEncrypt, pubEncryptionKey.encode('hex'))
 
@@ -434,15 +434,14 @@ class singleWorker(threading.Thread):
             inventoryHash = calculateInventoryHash(payload)
             objectType = 'broadcast'
             shared.inventory[inventoryHash] = (
-                objectType, streamNumber, payload, int(time.time()),'')
+                objectType, streamNumber, payload, int(time.time()),tag)
             shared.inventorySets[streamNumber].add(inventoryHash)
             with shared.printLock:
                 print 'sending inv (within sendBroadcast function) for object:', inventoryHash.encode('hex')
             shared.broadcastToSendDataQueues((
                 streamNumber, 'advertiseobject', inventoryHash))
 
-            shared.UISignalQueue.put(('updateSentItemStatusByAckdata', (ackdata, tr.translateText("MainWindow", "Broadcast sent on %1").arg(unicode(
-                strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8')))))
+            shared.UISignalQueue.put(('updateSentItemStatusByAckdata', (ackdata, tr.translateText("MainWindow", "Broadcast sent on %1").arg(l10n.formatTimestamp()))))
 
             # Update the status of the message in the 'sent' table to have
             # a 'broadcastsent' status
@@ -494,7 +493,7 @@ class singleWorker(threading.Thread):
                         if queryreturn != []: # if there was a pubkey in our inventory with the correct tag, we need to try to decrypt it.
                             for row in queryreturn:
                                 data, = row
-                                if shared.decryptAndCheckPubkeyPayload(data[8:], toaddress) == 'successful':
+                                if shared.decryptAndCheckPubkeyPayload(data, toaddress) == 'successful':
                                     needToRequestPubkey = False
                                     print 'debug. successfully decrypted and checked pubkey from sql inventory.' #testing
                                     sqlExecute(
@@ -508,7 +507,7 @@ class singleWorker(threading.Thread):
                                 for hash, storedValue in shared.inventory.items():
                                     objectType, streamNumber, payload, receivedTime, tag = storedValue
                                     if objectType == 'pubkey' and tag == toTag:
-                                        result = shared.decryptAndCheckPubkeyPayload(payload[8:], toaddress) #if valid, this function also puts it in the pubkeys table.
+                                        result = shared.decryptAndCheckPubkeyPayload(payload, toaddress) #if valid, this function also puts it in the pubkeys table.
                                         if result == 'successful':
                                             print 'debug. successfully decrypted and checked pubkey from memory inventory.'
                                             needToRequestPubkey = False
@@ -617,7 +616,7 @@ class singleWorker(threading.Thread):
                 if shared.isBitSetWithinBitfield(behaviorBitfield,30): # if receiver is a mobile device who expects that their address RIPE is included unencrypted on the front of the message..
                     if not shared.safeConfigGetBoolean('bitmessagesettings','willinglysendtomobile'): # if we are Not willing to include the receiver's RIPE hash on the message..
                         logger.info('The receiver is a mobile user but the sender (you) has not selected that you are willing to send to mobiles. Aborting send.')
-                        shared.UISignalQueue.put(('updateSentItemStatusByAckdata',(ackdata,tr.translateText("MainWindow",'Problem: Destination is a mobile device who requests that the destination be included in the message but this is disallowed in your settings.  %1').arg(unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'),localtime(int(time.time()))),'utf-8')))))
+                        shared.UISignalQueue.put(('updateSentItemStatusByAckdata',(ackdata,tr.translateText("MainWindow",'Problem: Destination is a mobile device who requests that the destination be included in the message but this is disallowed in your settings.  %1').arg(l10n.formatTimestamp()))))
                         # if the human changes their setting and then sends another message or restarts their client, this one will send at that time.
                         continue
                 readPosition += 4  # to bypass the bitfield of behaviors
@@ -656,7 +655,7 @@ class singleWorker(threading.Thread):
                                 '''UPDATE sent SET status='toodifficult' WHERE ackdata=? ''',
                                 ackdata)
                             shared.UISignalQueue.put(('updateSentItemStatusByAckdata', (ackdata, tr.translateText("MainWindow", "Problem: The work demanded by the recipient (%1 and %2) is more difficult than you are willing to do.").arg(str(float(requiredAverageProofOfWorkNonceTrialsPerByte) / shared.networkDefaultProofOfWorkNonceTrialsPerByte)).arg(str(float(
-                                requiredPayloadLengthExtraBytes) / shared.networkDefaultPayloadLengthExtraBytes)).arg(unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8')))))
+                                requiredPayloadLengthExtraBytes) / shared.networkDefaultPayloadLengthExtraBytes)).arg(l10n.formatTimestamp()))))
                             continue
             else: # if we are sending a message to ourselves or a chan..
                 with shared.printLock:
@@ -667,7 +666,7 @@ class singleWorker(threading.Thread):
                     privEncryptionKeyBase58 = shared.config.get(
                         toaddress, 'privencryptionkey')
                 except Exception as err:
-                    shared.UISignalQueue.put(('updateSentItemStatusByAckdata',(ackdata,tr.translateText("MainWindow",'Problem: You are trying to send a message to yourself or a chan but your encryption key could not be found in the keys.dat file. Could not encrypt message. %1').arg(unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'),localtime(int(time.time()))),'utf-8')))))
+                    shared.UISignalQueue.put(('updateSentItemStatusByAckdata',(ackdata,tr.translateText("MainWindow",'Problem: You are trying to send a message to yourself or a chan but your encryption key could not be found in the keys.dat file. Could not encrypt message. %1').arg(l10n.formatTimestamp()))))
                     with shared.printLock:
                         sys.stderr.write(
                             'Error within sendMsg. Could not read the keys from the keys.dat file for our own address. %s\n' % err)
@@ -682,7 +681,7 @@ class singleWorker(threading.Thread):
                     ackdata, tr.translateText("MainWindow", "Doing work necessary to send message."))))
 
             embeddedTime = pack('>Q', (int(time.time()) + random.randrange(
-                -300, 300)))  # the current time plus or minus five minutes. We will use this time both for our message and for the ackdata packed within our message.
+                -300, 300)))  # the current time plus or minus five minutes.
             if fromAddressVersionNumber == 2:
                 payload = '\x01'  # Message version.
                 payload += encodeVarint(fromAddressVersionNumber)
@@ -722,7 +721,7 @@ class singleWorker(threading.Thread):
                 payload += encodeVarint(len(messageToTransmit))
                 payload += messageToTransmit
                 fullAckPayload = self.generateFullAckMessage(
-                    ackdata, toStreamNumber, embeddedTime)  # The fullAckPayload is a normal msg protocol message with the proof of work already completed that the receiver of this message can easily send out.
+                    ackdata, toStreamNumber)  # The fullAckPayload is a normal msg protocol message with the proof of work already completed that the receiver of this message can easily send out.
                 payload += encodeVarint(len(fullAckPayload))
                 payload += fullAckPayload
                 signature = highlevelcrypto.sign(payload, privSigningKeyHex)
@@ -791,7 +790,7 @@ class singleWorker(threading.Thread):
                     fullAckPayload = ''                    
                 else:
                     fullAckPayload = self.generateFullAckMessage(
-                        ackdata, toStreamNumber, embeddedTime)  # The fullAckPayload is a normal msg protocol message with the proof of work already completed that the receiver of this message can easily send out.
+                        ackdata, toStreamNumber)  # The fullAckPayload is a normal msg protocol message with the proof of work already completed that the receiver of this message can easily send out.
                 payload += encodeVarint(len(fullAckPayload))
                 payload += fullAckPayload
                 signature = highlevelcrypto.sign(payload, privSigningKeyHex)
@@ -804,7 +803,7 @@ class singleWorker(threading.Thread):
                 encrypted = highlevelcrypto.encrypt(payload,"04"+pubEncryptionKeyBase256.encode('hex'))
             except:
                 sqlExecute('''UPDATE sent SET status='badkey' WHERE ackdata=?''', ackdata)
-                shared.UISignalQueue.put(('updateSentItemStatusByAckdata',(ackdata,tr.translateText("MainWindow",'Problem: The recipient\'s encryption key is no good. Could not encrypt message. %1').arg(unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'),localtime(int(time.time()))),'utf-8')))))
+                shared.UISignalQueue.put(('updateSentItemStatusByAckdata',(ackdata,tr.translateText("MainWindow",'Problem: The recipient\'s encryption key is no good. Could not encrypt message. %1').arg(l10n.formatTimestamp()))))
                 continue
             encryptedPayload = embeddedTime + encodeVarint(toStreamNumber) + encrypted
             target = 2**64 / ((len(encryptedPayload)+requiredPayloadLengthExtraBytes+8) * requiredAverageProofOfWorkNonceTrialsPerByte)
@@ -829,12 +828,10 @@ class singleWorker(threading.Thread):
                 objectType, toStreamNumber, encryptedPayload, int(time.time()),'')
             shared.inventorySets[toStreamNumber].add(inventoryHash)
             if shared.config.has_section(toaddress):
-                shared.UISignalQueue.put(('updateSentItemStatusByAckdata', (ackdata, tr.translateText("MainWindow", "Message sent. Sent on %1").arg(unicode(
-                    strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8')))))
+                shared.UISignalQueue.put(('updateSentItemStatusByAckdata', (ackdata, tr.translateText("MainWindow", "Message sent. Sent on %1").arg(l10n.formatTimestamp()))))
             else:
                 # not sending to a chan or one of my addresses
-                shared.UISignalQueue.put(('updateSentItemStatusByAckdata', (ackdata, tr.translateText("MainWindow", "Message sent. Waiting on acknowledgement. Sent on %1").arg(unicode(
-                    strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8')))))
+                shared.UISignalQueue.put(('updateSentItemStatusByAckdata', (ackdata, tr.translateText("MainWindow", "Message sent. Waiting for acknowledgement. Sent on %1").arg(l10n.formatTimestamp()))))
             print 'Broadcasting inv for my msg(within sendmsg function):', inventoryHash.encode('hex')
             shared.broadcastToSendDataQueues((
                 toStreamNumber, 'advertiseobject', inventoryHash))
@@ -927,10 +924,11 @@ class singleWorker(threading.Thread):
 
         shared.UISignalQueue.put((
             'updateStatusBar', tr.translateText("MainWindow",'Broacasting the public key request. This program will auto-retry if they are offline.')))
-        shared.UISignalQueue.put(('updateSentItemStatusByHash', (ripe, tr.translateText("MainWindow",'Sending public key request. Waiting for reply. Requested at %1').arg(unicode(
-            strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8')))))
+        shared.UISignalQueue.put(('updateSentItemStatusByHash', (ripe, tr.translateText("MainWindow",'Sending public key request. Waiting for reply. Requested at %1').arg(l10n.formatTimestamp()))))
 
-    def generateFullAckMessage(self, ackdata, toStreamNumber, embeddedTime):
+    def generateFullAckMessage(self, ackdata, toStreamNumber):
+        embeddedTime = pack('>Q', (int(time.time()) + random.randrange(
+            -300, 300)))  # the current time plus or minus five minutes.
         payload = embeddedTime + encodeVarint(toStreamNumber) + ackdata
         target = 2 ** 64 / ((len(payload) + shared.networkDefaultPayloadLengthExtraBytes +
                              8) * shared.networkDefaultProofOfWorkNonceTrialsPerByte)
@@ -948,8 +946,4 @@ class singleWorker(threading.Thread):
                 pass
 
         payload = pack('>Q', nonce) + payload
-        headerData = '\xe9\xbe\xb4\xd9'  # magic bits, slighly different from Bitcoin's magic bits.
-        headerData += 'msg\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-        headerData += pack('>L', len(payload))
-        headerData += hashlib.sha512(payload).digest()[:4]
-        return headerData + payload
+        return shared.CreatePacket('msg', payload)
